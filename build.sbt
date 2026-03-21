@@ -35,7 +35,7 @@ addCommandAlias(
 
 addCommandAlias(
   "compileJVM",
-  ";coreTestsJVM/Test/compile;stacktracerJVM/Test/compile;streamsTestsJVM/Test/compile;testTestsJVM/Test/compile;testMagnoliaTestsJVM/Test/compile;testRefinedJVM/Test/compile;testRunnerJVM/Test/compile;examplesJVM/Test/compile;macrosTestsJVM/Test/compile;concurrentJVM/Test/compile;managedTestsJVM/Test/compile"
+  ";coreTestsJVM/Test/compile;stacktracerJVM/Test/compile;streamsTestsJVM/Test/compile;testTestsJVM/Test/compile;testMagnoliaTestsJVM/Test/compile;testRefinedJVM/Test/compile;testRunnerJVM/Test/compile;examplesJVM/Test/compile;macrosTestsJVM/Test/compile;concurrentJVM/Test/compile;managedTestsJVM/Test/compile;nioSchedulerJVM/Test/compile"
 )
 // Split Native commands in half so that we can run them in parallel in CI
 addCommandAlias(
@@ -44,7 +44,7 @@ addCommandAlias(
 )
 addCommandAlias(
   "testNative2",
-  ";testTestsNative/test;examplesNative/Test/compile;macrosTestsNative/test;concurrentNative/test"
+  ";testTestsNative/test;examplesNative/Test/compile;macrosTestsNative/test;concurrentNative/test;nioSchedulerNative/test"
 )
 addCommandAlias(
   "testNative",
@@ -52,7 +52,7 @@ addCommandAlias(
 )
 addCommandAlias(
   "testJVM",
-  ";coreTestsJVM/test;stacktracerJVM/test;streamsTestsJVM/test;testTestsJVM/test;testMagnoliaTestsJVM/test;testRefinedJVM/test;testRunnerJVM/test;examplesJVM/Test/compile;benchmarks/Test/compile;macrosTestsJVM/test;concurrentJVM/test;managedTestsJVM/test;set ThisBuild/isSnapshot:=true;testJunitRunnerTests/test;testJunitEngineTests/test;reload"
+  ";coreTestsJVM/test;stacktracerJVM/test;streamsTestsJVM/test;testTestsJVM/test;testMagnoliaTestsJVM/test;testRefinedJVM/test;testRunnerJVM/test;examplesJVM/Test/compile;benchmarks/Test/compile;macrosTestsJVM/test;concurrentJVM/test;managedTestsJVM/test;nioSchedulerJVM/test;set ThisBuild/isSnapshot:=true;testJunitRunnerTests/test;testJunitEngineTests/test;reload"
 )
 addCommandAlias(
   "testJVMNoBenchmarks",
@@ -77,6 +77,7 @@ lazy val projectsCommon = List(
   macrosTests,
   managed,
   managedTests,
+  nioScheduler,
   stacktracer,
   streams,
   streamsTests,
@@ -611,6 +612,19 @@ lazy val concurrent = crossProject(JSPlatform, JVMPlatform, NativePlatform)
   .settings(stdSettings("zio-concurrent"))
   .settings(crossProjectSettings)
   .settings(buildInfoSettings("zio.concurrent"))
+  .enablePlugins(BuildInfoPlugin)
+  .jvmSettings(mimaSettings(failOnProblem = false))
+  .jsSettings(jsSettings)
+  .nativeSettings(nativeSettings)
+  .settings(scalacOptions += "-Wconf:msg=[@nowarn annotation does not suppress any warnings]:silent")
+
+lazy val nioScheduler = crossProject(JSPlatform, JVMPlatform, NativePlatform)
+  .crossType(CrossType.Pure)
+  .in(file("nio-scheduler"))
+  .dependsOn(core, testRunner % Test)
+  .settings(stdSettings("zio-nio-scheduler"))
+  .settings(crossProjectSettings)
+  .settings(buildInfoSettings("zio.nio"))
   .enablePlugins(BuildInfoPlugin)
   .jvmSettings(mimaSettings(failOnProblem = false))
   .jsSettings(jsSettings)
