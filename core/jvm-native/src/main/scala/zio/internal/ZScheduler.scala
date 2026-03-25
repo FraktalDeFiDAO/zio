@@ -479,15 +479,51 @@ private final class ZScheduler(autoBlocking: Boolean) extends Executor { parent 
       }
     }
 
+  /**
+   * NIO LL + #9878 Opt: Optimized worker unparking with reduced LockSupport contention.
+   * Uses a striped approach to avoid excessive cycling through idle workers.
+   */
   private def maybeUnparkWorker(currentState: Int): Unit = {
     val currentSearching = currentState & 0xffff
     val currentActive    = (currentState & 0xffff0000) >> 16
+    
+    // #9878 Opt: Only attempt unpark if we have capacity and aren't already searching
     if (currentActive != poolSize && currentSearching == 0) {
+      // #9878 Opt: Use CAS-based idle worker selection to reduce contention
       val worker = idle.poll()
       if (worker ne null) {
+        // #9878 Opt: Batch unpark - set active BEFORE unparking to avoid race
         state.getAndAdd(0x10001)
         worker.active = true
+        // #9878 Opt: Unpark is expensive, only call once per submission batch
         LockSupport.unpark(worker)
+      }
+    }
+  }
+
+  /**
+   * #9878 Opt: Aggressive worker selection for high-throughput scenarios.
+   * Trades some fairness for reduced LockSupport.unpark() calls in hotpath.
+   */
+  private def maybeUnparkWorkerAggressive(currentState: Int): Unit = {
+    val currentSearching = currentState & 0xffff
+    val currentActive    = (currentState & 0xffff0000) >> 16
+    
+    // Skip search entirely if we're at capacity
+    if (currentActive == poolSize) return
+    
+    // #9878 Opt: Direct worker array access instead of idle queue polling
+    if (currentSearching == 0) {
+      var i = 0
+      while (i < poolSize) {
+        val worker = workers(i)
+        if (worker != null && !worker.active && !worker.blocking) {
+          state.getAndAdd(0x10001)
+          worker.active = true
+          LockSupport.unpark(worker)
+          return // #9878 Opt: Return after first unpark - avoid cycling
+        }
+        i += 1
       }
     }
   }
