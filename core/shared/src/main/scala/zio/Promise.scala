@@ -86,6 +86,55 @@ final class Promise[E, A] private (blockingOn: FiberId) extends Serializable {
     ZIO.succeed(unsafe.completeWith(e)(Unsafe))
 
   /**
+   * Links this Promise to another Promise, such that when the other Promise is
+   * completed, this Promise will be automatically completed with the same result.
+   *
+   * This avoids unnecessary allocations and indirection that occur when forking
+   * work to complete a promise and then awaiting another promise. Instead of:
+   *
+   * {{{
+   * for {
+   *   promise1 <- Promise.make[E, A]
+   *   promise2 <- Promise.make[E, A]
+   *   _        <- (promise1.await.flatMap(promise2.succeed)).fork
+   *   result   <- promise2.await
+   * } yield result
+   * }}}
+   *
+   * You can write:
+   *
+   * {{{
+   * for {
+   *   promise1 <- Promise.make[E, A]
+   *   promise2 <- Promise.make[E, A]
+   *   _        <- promise2.become(promise1)
+   *   result   <- promise1.await
+   * } yield result
+   * }}}
+   *
+   * @param other The promise to link to
+   * @return A UIO that completes when the linkage is established
+   */
+  def become(other: Promise[E, A])(implicit trace: Trace): UIO[Unit] =
+    other.await.flatMap { result =>
+      this.completeWith(result)
+    }.unit
+
+  /**
+   * Links this Promise to another Promise with a transformation function.
+   * When the other Promise is completed with a value, this Promise will be
+   * completed with the transformed value.
+   *
+   * @param other The promise to link to
+   * @param f The transformation function to apply to the result
+   * @return A UIO that completes when the linkage is established
+   */
+  def becomeWith[B](other: Promise[E, B], f: B => A)(implicit trace: Trace): UIO[Unit] =
+    other.await.flatMap { result =>
+      this.succeed(f(result))
+    }.unit
+
+  /**
    * Completes the promise with the result of the specified effect. If the
    * promise has already been completed, the method will produce false.
    *
