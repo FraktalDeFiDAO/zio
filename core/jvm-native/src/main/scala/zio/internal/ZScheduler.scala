@@ -19,7 +19,7 @@ package zio.internal
 import zio._
 import zio.stacktracer.TracingImplicits.disableAutoTrace
 
-import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
+import java.util.concurrent.atomic.{AtomicInteger, AtomicLong, AtomicReferenceArray}
 import java.util.concurrent.locks.LockSupport
 import java.util.concurrent.{ConcurrentLinkedQueue, ThreadLocalRandom}
 import scala.collection.mutable
@@ -29,6 +29,12 @@ import scala.concurrent.{BlockContext, CanAwait}
  * A `ZScheduler` is an `Executor` that is optimized for running ZIO
  * applications. Inspired by "Making the Tokio Scheduler 10X Faster" by Carl
  * Lerche. [[https://tokio.rs/blog/2019-10-scheduler]]
+ * 
+ * This implementation includes the NIO Least-Loaded (LL) scheduler algorithm
+ * as described in https://nurmohammed840.github.io/posts/announcing-nio/
+ * 
+ * The LL scheduler assigns new tasks to the worker with the fewest tasks in
+ * its queue, addressing starvation issues and reducing contention under high load.
  */
 private final class ZScheduler(autoBlocking: Boolean) extends Executor { parent =>
 
@@ -41,6 +47,8 @@ private final class ZScheduler(autoBlocking: Boolean) extends Executor { parent 
   private[this] val globalLocations = makeLocations()
   private[this] val state           = new AtomicInteger(poolSize << 16)
   private[this] val workers         = Array.ofDim[ZScheduler.Worker](poolSize)
+  // NIO LL: Track queue lengths for least-loaded selection
+  private[this] val workerQueueLengths = new AtomicReferenceArray[Int](poolSize)
 
   @volatile private[this] var blockingLocations: Set[Trace] = Set.empty
 
@@ -148,8 +156,14 @@ private final class ZScheduler(autoBlocking: Boolean) extends Executor { parent 
     if (isBlocking(worker, runnable)) {
       submitBlocking(runnable)
     } else {
+      // NIO LL: Use least-loaded worker selection for non-local submissions
       if ((worker eq null) || worker.blocking) {
-        globalQueue.offer(runnable)
+        // NIO LL: Select worker with minimum queue length
+        val targetWorker = leastLoadedWorker()
+        targetWorker.localQueue.offer(runnable)
+        workerQueueLengths.incrementAndGet(targetWorker.id)
+        val currentState = state.get
+        maybeUnparkWorker(currentState)
       } else if (!worker.localQueue.offer(runnable)) {
         handleFullWorkerQueue(worker, runnable)
       } else ()
@@ -157,6 +171,27 @@ private final class ZScheduler(autoBlocking: Boolean) extends Executor { parent 
       maybeUnparkWorker(currentState)
       true
     }
+  }
+
+  /**
+   * NIO LL: Select the worker with the fewest tasks in its queue.
+   * This reduces contention under high load compared to work-stealing.
+   */
+  private def leastLoadedWorker(): ZScheduler.Worker = {
+    var minLen = Int.MaxValue
+    var minWorker: ZScheduler.Worker = workers(0)
+    
+    var i = 0
+    while (i < poolSize) {
+      val len = workerQueueLengths.get(i)
+      if (len < minLen) {
+        minLen = len
+        minWorker = workers(i)
+      }
+      i += 1
+    }
+    
+    minWorker
   }
 
   override def submitAndYield(runnable: Runnable)(implicit unsafe: Unsafe): Boolean = {
